@@ -1,0 +1,44 @@
+---
+- name: Update OpenSSL
+  sudo: yes
+  hosts: all
+  vars:
+    openssl_dependants:
+      - apache
+      - fail2ban
+      - haproxy
+      - keepalived
+      - nginx
+  tasks:
+    - name: Update OpenSSL package to latest
+      apt: "name={{item}} state=latest update_cache=yes"
+      with_items: 
+        - libssl-dev
+        - openssl
+      register: openssl_updated
+      when: ansible_os_family == "Debian"
+
+    - name: Check processes with the outdated library still in memory (round 1)
+      shell: "lsof -n | grep ssl | grep DEL | awk '{print $1}' | uniq"
+      register: services_requiring_restart
+      changed_when: services_requiring_restart.stdout != ""
+
+    # Only run if something is still dependant
+    - name: Find running services requiring restarted
+      command: "service {{item}} status | grep -i running"
+      register: running_openssl_dependants
+      with_items: openssl_dependants
+      when: services_requiring_restart.stdout != "" or openssl_updated.changed
+
+    # Restart services
+    - name: Restart OpenSSL dependant services
+      service: "name={{ item }} state=restarted"
+      with_items: running_openssl_dependants.results
+      when: services_requiring_restart.stdout != "" or running_openssl_dependants.changed
+
+    # Ensure we got them all - should be no changed
+    - name: Check processes with the outdated library still in memory (round 2)
+      shell: "lsof -n | grep ssl | grep DEL | awk '{print $1}' | uniq"
+      register: running_openssl_dependants
+      changed_when: running_openssl_dependants.stdout != ""
+      failed_when: running_openssl_dependants.stdout != ""
